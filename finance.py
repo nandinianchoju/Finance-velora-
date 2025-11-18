@@ -8,7 +8,6 @@ Original file is located at
 """
 
 !pip install -q transformers torch accelerate gradio huggingface_hub
-
 import gradio as gr
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -17,7 +16,7 @@ from datetime import datetime
 import re
 
 # Initialize the model and tokenizer
-print("Loading IBM Granite 3.3 2B Instruct model...")
+print("Loading IBM Granite 3.1 2B Instruct model...")
 model_name = "ibm-granite/granite-3.1-2b-instruct"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
@@ -27,19 +26,16 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 print("Model loaded successfully!")
 
-# User profile storage
-user_profiles = {}
-
 class FinanceChatbot:
-    def _init_(self):
+    def __init__(self):  # FIXED: Was _init_ (missing underscores)
         self.conversation_history = []
         self.user_type = "general"
         self.spending_data = []
-
+        
     def set_user_type(self, user_type):
         """Set user demographic for adaptive responses"""
         self.user_type = user_type
-
+        
     def get_tone_instruction(self):
         """Get tone instructions based on user type"""
         tones = {
@@ -49,30 +45,30 @@ class FinanceChatbot:
             "general": "Use balanced, accessible language suitable for general audience."
         }
         return tones.get(self.user_type, tones["general"])
-
+    
     def generate_response(self, user_message, context=""):
         """Generate AI response using Granite model"""
         tone_instruction = self.get_tone_instruction()
-
+        
         system_prompt = f"""You are a knowledgeable personal finance advisor. {tone_instruction}
 Provide helpful, accurate financial guidance on savings, taxes, investments, budgeting, and spending habits.
 {context}"""
-
+        
         # Build conversation context
         messages = [{"role": "system", "content": system_prompt}]
-
+        
         # Add recent conversation history (last 3 exchanges)
         for msg in self.conversation_history[-6:]:
             messages.append(msg)
-
+        
         messages.append({"role": "user", "content": user_message})
-
+        
         # Format prompt
         prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
+        
         # Generate response
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
+        
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
@@ -82,63 +78,75 @@ Provide helpful, accurate financial guidance on savings, taxes, investments, bud
                 do_sample=True,
                 pad_token_id=tokenizer.eos_token_id
             )
-
+        
         response = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
-
+        
         # Update conversation history
         self.conversation_history.append({"role": "user", "content": user_message})
         self.conversation_history.append({"role": "assistant", "content": response})
-
+        
         return response
-
+    
     def generate_budget_summary(self, income, expenses_dict):
         """Generate AI-powered budget summary"""
         expenses_text = "\n".join([f"- {cat}: ${amt}" for cat, amt in expenses_dict.items()])
         total_expenses = sum(expenses_dict.values())
         savings = income - total_expenses
-
+        savings_rate = (savings / income * 100) if income > 0 else 0
+        
         prompt = f"""Create a detailed budget summary report for a user with:
-Monthly Income: ${income}
+Monthly Income: ${income:,.2f}
 Monthly Expenses:
 {expenses_text}
-Total Expenses: ${total_expenses}
-Remaining/Savings: ${savings}
+Total Expenses: ${total_expenses:,.2f}
+Remaining/Savings: ${savings:,.2f} ({savings_rate:.1f}% savings rate)
 
 Provide:
 1. Overview of financial health
 2. Spending breakdown analysis
 3. Savings rate assessment
-4. Specific recommendations for improvement
-5. Action items
+4. Specific recommendations for improvement (at least 3)
+5. Priority action items
 
 Format as a clear, structured report."""
-
-        context = f"User is a {self.user_type}. The budget shows income of ${income} and total expenses of ${total_expenses}."
+        
+        context = f"User is a {self.user_type}. The budget shows income of ${income:,.2f} and total expenses of ${total_expenses:,.2f}."
         return self.generate_response(prompt, context)
-
+    
     def analyze_spending(self, expenses_dict):
         """Analyze spending patterns and provide insights"""
         total = sum(expenses_dict.values())
+        if total == 0:
+            return "No expenses to analyze. Please enter your spending amounts."
+        
         percentages = {cat: (amt/total)*100 for cat, amt in expenses_dict.items()}
-
-        analysis_data = "\n".join([f"- {cat}: ${amt} ({percentages[cat]:.1f}%)" for cat, amt in expenses_dict.items()])
-
+        
+        # Sort by amount descending
+        sorted_expenses = sorted(expenses_dict.items(), key=lambda x: x[1], reverse=True)
+        analysis_data = "\n".join([f"- {cat}: ${amt:,.2f} ({percentages[cat]:.1f}%)" for cat, amt in sorted_expenses])
+        
         prompt = f"""Analyze this spending pattern and provide actionable insights:
 
 {analysis_data}
-Total Spending: ${total}
+Total Monthly Spending: ${total:,.2f}
 
 Provide:
-1. Spending pattern analysis
-2. Areas of concern or overspending
-3. Optimization opportunities
-4. Specific actionable recommendations (at least 5)
-5. Potential monthly savings with recommendations
+1. Spending pattern analysis (identify trends and concerns)
+2. Top spending categories breakdown
+3. Areas of potential overspending
+4. Optimization opportunities with specific tactics
+5. At least 5 actionable recommendations
+6. Estimated potential monthly savings
 
-Be specific and practical."""
-
+Be specific, practical, and prioritize high-impact changes."""
+        
         context = f"User type: {self.user_type}"
         return self.generate_response(prompt, context)
+    
+    def reset_conversation(self):
+        """Reset conversation history"""
+        self.conversation_history = []
+        return "Conversation history cleared!"
 
 # Initialize chatbot
 chatbot = FinanceChatbot()
@@ -148,7 +156,7 @@ def chat_interface(message, history, user_type):
     """Handle chat messages"""
     if user_type != chatbot.user_type:
         chatbot.set_user_type(user_type)
-
+    
     response = chatbot.generate_response(message)
     return response
 
@@ -156,8 +164,12 @@ def generate_budget_report(income, housing, food, transport, utilities, entertai
     """Generate budget summary"""
     if user_type != chatbot.user_type:
         chatbot.set_user_type(user_type)
-
+    
     try:
+        income_val = float(income or 0)
+        if income_val <= 0:
+            return "❌ Please enter a valid monthly income greater than 0."
+        
         expenses = {
             "Housing": float(housing or 0),
             "Food": float(food or 0),
@@ -167,17 +179,25 @@ def generate_budget_report(income, housing, food, transport, utilities, entertai
             "Healthcare": float(healthcare or 0),
             "Other": float(other or 0)
         }
-
-        report = chatbot.generate_budget_summary(float(income), expenses)
+        
+        # Remove zero values for cleaner report
+        expenses = {k: v for k, v in expenses.items() if v > 0}
+        
+        if not expenses:
+            return "❌ Please enter at least one expense category."
+        
+        report = chatbot.generate_budget_summary(income_val, expenses)
         return report
+    except ValueError:
+        return "❌ Error: Please enter valid numbers for all fields."
     except Exception as e:
-        return f"Error generating report: {str(e)}"
+        return f"❌ Error generating report: {str(e)}"
 
 def analyze_spending_patterns(housing, food, transport, utilities, entertainment, healthcare, other, user_type):
     """Analyze spending and provide insights"""
     if user_type != chatbot.user_type:
         chatbot.set_user_type(user_type)
-
+    
     try:
         expenses = {
             "Housing": float(housing or 0),
@@ -188,27 +208,34 @@ def analyze_spending_patterns(housing, food, transport, utilities, entertainment
             "Healthcare": float(healthcare or 0),
             "Other": float(other or 0)
         }
-
+        
         # Remove zero values
         expenses = {k: v for k, v in expenses.items() if v > 0}
-
+        
         if not expenses:
-            return "Please enter at least one expense category to analyze."
-
+            return "❌ Please enter at least one expense category to analyze."
+        
         insights = chatbot.analyze_spending(expenses)
         return insights
+    except ValueError:
+        return "❌ Error: Please enter valid numbers for all expense fields."
     except Exception as e:
-        return f"Error analyzing spending: {str(e)}"
+        return f"❌ Error analyzing spending: {str(e)}"
+
+def clear_chat():
+    """Clear chat history"""
+    chatbot.reset_conversation()
+    return []
 
 # Build Gradio Interface
 with gr.Blocks(title="Personal Finance Chatbot", theme=gr.themes.Soft()) as demo:
     gr.Markdown("""
     # 💰 Personal Finance Chatbot
-    ### AI-Powered Financial Guidance with IBM Granite 3.3 2B
-
+    ### AI-Powered Financial Guidance with IBM Granite 3.1 2B
+    
     Get personalized financial advice, budget summaries, and spending insights tailored to your needs!
     """)
-
+    
     # User Type Selection (Global)
     with gr.Row():
         user_type_global = gr.Radio(
@@ -217,18 +244,18 @@ with gr.Blocks(title="Personal Finance Chatbot", theme=gr.themes.Soft()) as demo
             label="👤 Select Your Profile",
             info="Chatbot adapts its language and advice based on your profile"
         )
-
+    
     with gr.Tabs():
         # Tab 1: Conversational Chatbot
         with gr.Tab("💬 Financial Advisor Chat"):
             gr.Markdown("### Ask any questions about savings, taxes, investments, or financial planning!")
-
+            
             chatbot_interface = gr.Chatbot(
                 label="Financial Advisor",
                 height=400,
                 show_label=True
             )
-
+            
             with gr.Row():
                 msg_input = gr.Textbox(
                     label="Your Question",
@@ -236,61 +263,70 @@ with gr.Blocks(title="Personal Finance Chatbot", theme=gr.themes.Soft()) as demo
                     scale=4
                 )
                 submit_btn = gr.Button("Send", scale=1, variant="primary")
-
+            
+            with gr.Row():
+                clear_btn = gr.Button("Clear Chat", variant="secondary", size="sm")
+            
             gr.Examples(
                 examples=[
                     "How much should I save for emergency fund?",
                     "What are the best tax-saving investment options?",
                     "Should I invest in stocks or mutual funds?",
                     "How can I reduce my monthly expenses?",
-                    "What's the 50-30-20 budgeting rule?"
+                    "What's the 50-30-20 budgeting rule?",
+                    "How do I start building credit?",
+                    "What's the difference between Roth IRA and Traditional IRA?"
                 ],
                 inputs=msg_input
             )
-
+            
             def respond(message, chat_history, user_type):
+                if not message.strip():
+                    return "", chat_history
                 bot_response = chat_interface(message, chat_history, user_type)
                 chat_history.append((message, bot_response))
                 return "", chat_history
-
+            
             submit_btn.click(
                 respond,
                 inputs=[msg_input, chatbot_interface, user_type_global],
                 outputs=[msg_input, chatbot_interface]
             )
-
+            
             msg_input.submit(
                 respond,
                 inputs=[msg_input, chatbot_interface, user_type_global],
                 outputs=[msg_input, chatbot_interface]
             )
-
+            
+            clear_btn.click(clear_chat, outputs=chatbot_interface)
+        
         # Tab 2: Budget Summary Generator
         with gr.Tab("📊 Budget Summary Generator"):
             gr.Markdown("### Generate AI-powered budget analysis and recommendations")
-
+            
             with gr.Row():
                 with gr.Column():
-                    income_input = gr.Number(label="Monthly Income ($)", value=5000)
-
+                    income_input = gr.Number(label="Monthly Income ($)", value=5000, minimum=0)
+                    
                     gr.Markdown("#### Monthly Expenses")
-                    housing_input = gr.Number(label="Housing/Rent ($)", value=1500)
-                    food_input = gr.Number(label="Food/Groceries ($)", value=600)
-                    transport_input = gr.Number(label="Transportation ($)", value=400)
-                    utilities_input = gr.Number(label="Utilities ($)", value=200)
-                    entertainment_input = gr.Number(label="Entertainment ($)", value=300)
-                    healthcare_input = gr.Number(label="Healthcare ($)", value=200)
-                    other_input = gr.Number(label="Other Expenses ($)", value=300)
-
+                    housing_input = gr.Number(label="Housing/Rent ($)", value=1500, minimum=0)
+                    food_input = gr.Number(label="Food/Groceries ($)", value=600, minimum=0)
+                    transport_input = gr.Number(label="Transportation ($)", value=400, minimum=0)
+                    utilities_input = gr.Number(label="Utilities ($)", value=200, minimum=0)
+                    entertainment_input = gr.Number(label="Entertainment ($)", value=300, minimum=0)
+                    healthcare_input = gr.Number(label="Healthcare ($)", value=200, minimum=0)
+                    other_input = gr.Number(label="Other Expenses ($)", value=300, minimum=0)
+                    
                     generate_budget_btn = gr.Button("Generate Budget Report", variant="primary")
-
+                
                 with gr.Column():
                     budget_output = gr.Textbox(
                         label="Budget Summary Report",
                         lines=20,
                         show_label=True
                     )
-
+            
             generate_budget_btn.click(
                 generate_budget_report,
                 inputs=[
@@ -300,31 +336,31 @@ with gr.Blocks(title="Personal Finance Chatbot", theme=gr.themes.Soft()) as demo
                 ],
                 outputs=budget_output
             )
-
+        
         # Tab 3: Spending Insights
         with gr.Tab("🔍 Spending Insights & Suggestions"):
             gr.Markdown("### Get AI-powered analysis of your spending patterns with actionable recommendations")
-
+            
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("#### Enter Your Monthly Expenses")
-                    housing_insight = gr.Number(label="Housing/Rent ($)", value=1500)
-                    food_insight = gr.Number(label="Food/Groceries ($)", value=600)
-                    transport_insight = gr.Number(label="Transportation ($)", value=400)
-                    utilities_insight = gr.Number(label="Utilities ($)", value=200)
-                    entertainment_insight = gr.Number(label="Entertainment ($)", value=300)
-                    healthcare_insight = gr.Number(label="Healthcare ($)", value=200)
-                    other_insight = gr.Number(label="Other Expenses ($)", value=300)
-
+                    housing_insight = gr.Number(label="Housing/Rent ($)", value=1500, minimum=0)
+                    food_insight = gr.Number(label="Food/Groceries ($)", value=600, minimum=0)
+                    transport_insight = gr.Number(label="Transportation ($)", value=400, minimum=0)
+                    utilities_insight = gr.Number(label="Utilities ($)", value=200, minimum=0)
+                    entertainment_insight = gr.Number(label="Entertainment ($)", value=300, minimum=0)
+                    healthcare_insight = gr.Number(label="Healthcare ($)", value=200, minimum=0)
+                    other_insight = gr.Number(label="Other Expenses ($)", value=300, minimum=0)
+                    
                     analyze_btn = gr.Button("Analyze Spending", variant="primary")
-
+                
                 with gr.Column():
                     insights_output = gr.Textbox(
                         label="Spending Analysis & Recommendations",
                         lines=20,
                         show_label=True
                     )
-
+            
             analyze_btn.click(
                 analyze_spending_patterns,
                 inputs=[
@@ -334,18 +370,22 @@ with gr.Blocks(title="Personal Finance Chatbot", theme=gr.themes.Soft()) as demo
                 ],
                 outputs=insights_output
             )
-
+    
     gr.Markdown("""
     ---
     ### 🎯 Features:
-    - *Adaptive AI*: Responses tailored to students, professionals, or seniors
-    - *Conversational Guidance*: Ask any financial questions naturally
-    - *Budget Analysis*: Comprehensive financial reports with actionable insights
-    - *Spending Optimization*: AI-powered recommendations to improve your finances
-
-    Powered by IBM Granite 3.3 2B Instruct Model
+    - **Adaptive AI**: Responses tailored to students, professionals, or seniors
+    - **Conversational Guidance**: Ask any financial questions naturally
+    - **Budget Analysis**: Comprehensive financial reports with actionable insights
+    - **Spending Optimization**: AI-powered recommendations to improve your finances
+    
+    💡 **Tip**: Switch your profile type to get advice tailored to your life stage!
+    
+    ---
+    *Powered by IBM Granite 3.1 2B Instruct Model*
     """)
 
 # Launch the interface
-print("\n🚀 Launching Personal Finance Chatbot...")
-demo.launch(share=True, debug=True)
+if __name__ == "__main__":
+    print("\n🚀 Launching Personal Finance Chatbot...")
+    demo.launch(share=True, debug=True)
